@@ -1,0 +1,128 @@
+---
+title: "Basic Recommender System"
+author: "Cheryl Bowersox"
+date: "Tuesday, February 14, 2017"
+output: html_document
+---
+
+
+** Description of system:
+This system provides recommendations of top 10 tasty beers for users based collaborative filtering.
+
+Input: Matrix of users and rankings give to each beer across several attributes. 
+
+Data Source: 
+
+https://data.world/socialmediadata/beeradvocate
+
+Unique Users are defined by variable review_profilename
+Unique beer (items) are defined by variable beer_beerid
+For this model I am only using the revew_overall rating to establish the recommendation, and only pulling the first 10K records. 
+
+The function 'manualrec' was created not using any built in recommendation packages. This funciton takes the data table and a user name who the recommendation is for as input, and then creates a list of 10 recommended beers by finding the cosine similarity, pulling those identified users highest rated beers, and weighting the overall results by a factor of how many similar profiles listed that beer. In the case of a tie, the data is also sorted by most recent reviews. 
+This manual function is inelegant, uses loops to create the final list, and is very resource-intensive to run. 
+
+
+```{r message=FALSE, warning=FALSE}
+
+# import libraries
+library(recommenderlab)
+library(dplyr)
+library(tidyr)
+library(reshape)
+
+#read data
+beerdata <- read.csv("~/GitHub/IS643/beerdata.csv")
+
+#shape data to create matrix, profile X beer
+
+beerrates <- beerdata %>%select(beer_beerid, review_profilename, review_overall)
+df <- head(beerrates, 10000)%>%group_by(beer_beerid,review_profilename)%>%summarise(avgrev= mean(review_overall))
+
+dfwide <- spread(df,beer_beerid, avgrev)
+
+dfwide[is.na(dfwide)] <-0
+
+# function to compute simliarity between vectors in this case comparing profile for user A with user 
+#input X matrix the wide matrix, a username, output simliarity with other users
+
+manualrec <- function(df, user){
+  
+  #calculate the affinity for this user's vector with all other users 
+  #get users vector
+  #user <- "abrand"
+  u <- as.numeric(dfwide%>%filter(review_profilename == user)%>%select(-review_profilename))
+  dfv <- dfwide%>%filter(review_profilename != user)
+  dfrank <- data.frame(name = dfv$review_profilename, sim = -10)
+
+  #awful loop use apply(?)
+  for (i in 1:nrow(dfrank)){
+    v <- as.numeric((dfv%>%select(-review_profilename))[i,])  
+    dfrank$sim[i] <- crossprod(u, v)/(sqrt(crossprod(u)) * sqrt(crossprod(v))) 
+  }
+  # arrange users, top 5 users that match
+  topten <- head(dfrank%>%arrange(desc(sim)),10)
+  
+  results <- beerdata%>%
+    select(beer_name,review_profilename,review_overall,review_time)%>%
+    filter(review_profilename %in% topten[,1])
+  
+  results <- merge(x = results, y = topten, by.x = "review_profilename",
+                   by.y = "name", all.x = TRUE)
+  #weight by count of recommendations
+  results$beerrated <- results$review_overall * results$sim
+  results <- results%>%select(beer_name,beerrated, review_time)%>%
+    group_by(beer_name)%>%
+    summarise(rank = mean(beerrated), count=n(), avgtime = mean(review_time))
+  results$wrank <- results$rank * results$count
+  
+  #sort by max beerrated score, then by max review time
+  recommend <- results%>%arrange(desc(wrank),desc(avgtime))%>%select(beer_name,wrank)
+  
+  return (head(recommend,10))
+  }
+  
+```
+For the first example I used user named "abrand" and found the related list
+
+```{r}
+(manualrec(dfwide,"abrand"))
+```
+
+A second recommendation example I used the user named "beerguy101"
+```{r}
+(manualrec(dfwide,"beerguy101"))
+```
+
+Using the built-in functions in the recommendlab package I get different, but much faster results:
+
+```{r}
+#convert to matrix
+beerrates <- beerdata %>%select(user = review_profilename, beer = beer_name, rate = review_overall)
+df <- head(beerrates, 10000)
+
+ratemat <- as(df,"realRatingMatrix")
+
+train <- ratemat[1:150]  # trainng data for model
+rec =Recommender(train,method="UBCF", 
+      param=list(normalize = "Z-score",method="Cosine",nn=5, minRating=1))
+
+```
+
+Predicting top 10 for "abrand" user again, this time using the UBCF method of the Recommender function in the package  yields a different, and quicker,  result
+```{r}
+pre_for_abrand <- predict(rec, ratemat["abrand",], n=10)
+
+(as(pre_for_abrand, "list"))
+
+````
+
+Similarly, the prediction for the user "beerguy101" has different outcomes. 
+
+```{r}
+pre_for_beerguy101 <- predict(rec, ratemat["beerguy101",], n=10)
+(as(pre_for_beerguy101, "list"))
+
+````
+
+
